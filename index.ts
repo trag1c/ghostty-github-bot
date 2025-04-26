@@ -113,33 +113,54 @@ const getTeamMembers = async (teamName: string): Promise<string[]> => {
 	return members
 }
 
-const batched = <T>(arr: T[], size: number): T[][] => {
-	const out: T[][] = []
-	for (let i = 0; i < arr.length; i += size) {
-		out.push(arr.slice(i, i + size))
+const findMentionedUsers = async (prNumber: number): Promise<Set<string>> => {
+	console.log("Looking for previously mentioned users...")
+	const comments = await octokit.rest.issues.listComments({
+		owner: ORG_NAME,
+		repo: REPO_NAME,
+		issue_number: prNumber,
+	})
+	const mentionedUsers = new Set<string>()
+	for (const comment of comments.data) {
+		if (comment.user?.login !== "ghostty-bot") {
+			continue
+		}
+		const matches = comment.body?.match(/@([a-zA-Z0-9_-]+)/g)
+		for (const match of matches || []) {
+			console.log(`Found mention: ${match}`)
+			mentionedUsers.add(match.slice(1))
+		}
 	}
-	return out
+	if (mentionedUsers.size === 0) {
+		console.log("No previously mentioned users found")
+	}
+	return mentionedUsers
 }
 
-const requestReview = async (
+const pingTranslators = async (
 	prNumber: number,
 	members: string[],
 	prAuthor: string,
 ) => {
-	const reviewers = new Set<string>(members)
-	reviewers.delete(prAuthor)
-
-	for (const batch of batched(Array.from(reviewers), 10)) {
-		const membersStr = batch.map((m) => `"${m}"`).join(", ")
-		console.log(`Requesting review from ${membersStr}...`)
-		await octokit.rest.pulls.requestReviewers({
-			owner: ORG_NAME,
-			repo: REPO_NAME,
-			pull_number: prNumber,
-			reviewers: batch,
-			headers: { accept: "application/vnd.github.v3+json" },
-		})
+	let translators = new Set<string>(members)
+	translators.delete(prAuthor)
+	translators = translators.difference(await findMentionedUsers(prNumber))
+	if (translators.size === 0) {
+		console.log("No translators to ping")
+		return
 	}
+
+	const pings = Array.from(translators)
+		.map((m) => `@${m}`)
+		.join(", ")
+	console.log(`Pinging translators: ${pings}...`)
+
+	await octokit.rest.issues.createComment({
+		owner: ORG_NAME,
+		repo: REPO_NAME,
+		issue_number: prNumber,
+		body: `Some \`.po\` files were changed, cc ${pings}`,
+	})
 }
 
 const processPr = async (pr: PullRequest) => {
@@ -158,7 +179,7 @@ const processPr = async (pr: PullRequest) => {
 		Array.from(foundOwners).map(async (owner) => getTeamMembers(owner)),
 	).then((lists) => lists.flat())
 
-	await requestReview(pr.number, memberLists, author)
+	await pingTranslators(pr.number, memberLists, author)
 }
 
 webhooks.on("pull_request", async ({ payload }) => {
