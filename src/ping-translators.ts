@@ -1,21 +1,11 @@
-import { Webhooks } from "@octokit/webhooks"
 import type { PullRequestEvent } from "@octokit/webhooks-types"
-import { Octokit } from "octokit"
-import SmeeClient from "smee-client"
+import { ORG_NAME, REPO_NAME, octokit } from "./setup"
 
-type PullRequest = PullRequestEvent["pull_request"]
-
-const ORG_NAME = process.env.ORG_NAME || ""
-const REPO_NAME = process.env.REPO_NAME || ""
+export type PullRequest = PullRequestEvent["pull_request"]
 
 const TEAM_NAME_PREFIX = `@${ORG_NAME}/`
 const ALLOWED_PARENT_TEAM = "localization"
 const LOCALIZATION_TEAM_NAME_PATTERN = /^[a-z]{2}_[A-Z]{2}$/
-
-const PORT = 3000
-
-const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN || "" })
-const webhooks = new Webhooks({ secret: process.env.WEBHOOK_SECRET || "" })
 
 const getChangedFiles = async (prNumber: number): Promise<string[]> => {
 	console.log("Gathering changed files...")
@@ -163,7 +153,7 @@ const pingTranslators = async (
 	})
 }
 
-const processPr = async (pr: PullRequest) => {
+export const processPr = async (pr: PullRequest) => {
 	console.log(`Processing PR #${pr.number}...`)
 
 	const changedFiles = await getChangedFiles(pr.number)
@@ -181,44 +171,3 @@ const processPr = async (pr: PullRequest) => {
 
 	await pingTranslators(pr.number, memberLists, author)
 }
-
-webhooks.on("pull_request", async ({ payload }) => {
-	console.log(payload.action)
-	if (payload.action !== "opened" && payload.action !== "synchronize") return
-	await processPr(payload.pull_request as PullRequest)
-})
-
-const server = Bun.serve({
-	port: PORT,
-	async fetch(req: Request) {
-		if (req.method !== "POST")
-			return new Response("method not allowed", { status: 405 })
-
-		const payload = await req.text()
-		const signature = req.headers.get("x-hub-signature-256") || ""
-		const id = req.headers.get("x-github-delivery") || ""
-		const name = req.headers.get("x-github-event") || ""
-
-		try {
-			await webhooks.verifyAndReceive({ id, name, signature, payload })
-		} catch (err) {
-			console.error("error handling webhook:", err)
-			return new Response("bad request", { status: 400 })
-		}
-		return new Response("ok")
-	},
-})
-
-const smee = new SmeeClient({
-	source: process.env.WEBHOOK_URL || "",
-	target: `http://localhost:${PORT}`,
-	logger: console,
-})
-
-const events = smee.start()
-
-process.on("SIGINT", () => {
-	console.log("bye")
-	events.close()
-	server.stop()
-})
